@@ -1,4 +1,5 @@
 #include "paging.h"
+#include "pmm.h"
 #include "string.h"
 
 /* -------------------------------------------------------------------------
@@ -63,9 +64,106 @@ void paging_flush_tlb(uint32_t virt)
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
+void paging_switch(uint32_t pd_phys)
+{
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(pd_phys) : "memory");
+}
+
 uint32_t paging_get_cr3(void)
 {
     uint32_t cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
     return cr3;
+}
+
+uint32_t paging_get_kernel_pd_phys(void)
+{
+    /* Identity-mapped: virtual address == physical address */
+    return (uint32_t)page_directory;
+}
+
+/* -------------------------------------------------------------------------
+ * paging_create_pd – allocate a new page directory and copy kernel PDEs
+ * ---------------------------------------------------------------------- */
+uint32_t paging_create_pd(void)
+{
+    uint32_t pd_phys = pmm_alloc_frame();
+    if (!pd_phys) {
+        return 0u;
+    }
+
+    uint32_t *new_pd = (uint32_t *)pd_phys;   /* identity-mapped */
+    memset(new_pd, 0, PAGE_SIZE * sizeof(uint8_t));
+
+    /* Copy kernel PDEs (first 8 MB = PDEs 0 and 1) into the new PD */
+    new_pd[0] = page_directory[0];
+    new_pd[1] = page_directory[1];
+
+    return pd_phys;
+}
+
+/* -------------------------------------------------------------------------
+ * paging_alloc_user_pages – map n_pages at virt_base in a given PD
+ * ---------------------------------------------------------------------- */
+int paging_alloc_user_pages(uint32_t pd_phys, uint32_t virt_base,
+                             uint32_t n_pages)
+{
+    uint32_t *pd = (uint32_t *)pd_phys;
+
+    for (uint32_t i = 0; i < n_pages; i++) {
+        uint32_t virt = virt_base + i * PAGE_SIZE;
+        uint32_t pdi  = virt >> 22u;
+        uint32_t pti  = (virt >> 12u) & 0x3FFu;
+
+        /* Allocate a page table if this PDE is not yet present */
+        if (!(pd[pdi] & PAGE_PRESENT)) {
+            uint32_t pt_phys = pmm_alloc_frame();
+            if (!pt_phys) {
+                return -1;
+            }
+            memset((void *)pt_phys, 0, PAGE_SIZE * sizeof(uint8_t));
+            pd[pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+        }
+
+        /* Allocate a physical frame for this virtual page */
+        uint32_t frame_phys = pmm_alloc_frame();
+        if (!frame_phys) {
+            return -1;
+        }
+
+        uint32_t *pt = (uint32_t *)(pd[pdi] & ~0xFFFu);
+        pt[pti] = frame_phys | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+    }
+
+    return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * paging_destroy_pd – free all user-mode pages/tables, then the PD itself
+ * ---------------------------------------------------------------------- */
+void paging_destroy_pd(uint32_t pd_phys)
+{
+    uint32_t *pd = (uint32_t *)pd_phys;
+
+    /* Skip PDEs 0-1 (kernel identity map – shared with kernel PD) */
+    for (uint32_t i = 2u; i < PD_ENTRIES; i++) {
+        if (!(pd[i] & PAGE_PRESENT)) {
+            continue;
+        }
+
+        uint32_t  pt_phys = pd[i] & ~0xFFFu;
+        uint32_t *pt      = (uint32_t *)pt_phys;
+
+        /* Free each mapped frame */
+        for (uint32_t j = 0u; j < PT_ENTRIES; j++) {
+            if (pt[j] & PAGE_PRESENT) {
+                pmm_free_frame(pt[j] & ~0xFFFu);
+            }
+        }
+        /* Free the page table itself */
+        pmm_free_frame(pt_phys);
+    }
+
+    /* Free the page directory frame */
+    pmm_free_frame(pd_phys);
 }

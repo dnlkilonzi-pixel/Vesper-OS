@@ -7,6 +7,7 @@
 #include "pic.h"
 #include "keyboard.h"
 #include "timer.h"
+#include "rtc.h"
 #include "pmm.h"
 #include "paging.h"
 #include "gdt.h"
@@ -19,23 +20,23 @@
 /* -------------------------------------------------------------------------
  * kernel_main – called by kernel_entry.asm immediately after BSS is zeroed.
  *
- * Initialisation order:
- *   1.  vga_init()      – screen must come first (diagnostic output)
- *   2.  serial_init()   – mirror output to COM1 (QEMU -serial stdio)
- *   3.  kmem_init()     – static heap allocator
- *   4.  tss_init()      – zero TSS, set initial kernel stack
- *   5.  gdt_init()      – load expanded GDT (user segs + TSS descriptor)
- *   6.  tss_flush()     – execute LTR (requires GDT to be loaded first)
- *   7.  idt_init()      – load IDT (interrupts still disabled)
- *   8.  pic_init()      – remap 8259A PIC, mask all IRQs
- *   9.  timer_init()    – program PIT at 100 Hz, unmask IRQ0
- *   10. keyboard_init() – register IRQ1 handler, unmask IRQ1
- *   11. pmm_init()      – physical frame allocator (reads E820 map)
+ * Initialisation order (Tier 2):
+ *   1.  vga_init()      – screen must come first
+ *   2.  serial_init()   – COM1 115200 baud
+ *   3.  kmem_init()     – static heap
+ *   4.  tss_init()      – zero TSS, set initial ESP0
+ *   5.  gdt_init()      – load GDT (null/kcode/kdata/ucode/udata/TSS)
+ *   6.  tss_flush()     – LTR (requires GDT loaded)
+ *   7.  idt_init()      – load IDT
+ *   8.  pic_init()      – remap 8259A, mask all
+ *   9.  timer_init()    – PIT 100 Hz, preemptive slice = 50 ms
+ *   10. keyboard_init() – IRQ1, extended scancodes (arrow keys)
+ *   11. pmm_init()      – bitmap PMM (reads E820)
  *   12. paging_init()   – identity-map 0–8 MB, enable CR0.PG
- *   13. syscall_init()  – install INT 0x80 gate (DPL=3)
- *   14. process_init()  – create idle process, initialise scheduler
- *   15. ata_init()      – detect primary ATA drive
- *   16. fs_init()       – check/report VesperFS status
+ *   13. syscall_init()  – INT 0x80 gate (DPL=3)
+ *   14. process_init()  – idle process, preemptive scheduler
+ *   15. ata_init()      – ATA PIO primary master
+ *   16. fs_init()       – VesperFS check
  *   17. sti             – enable hardware interrupts
  *   18. shell_run()     – interactive shell (never returns)
  * ---------------------------------------------------------------------- */
@@ -48,7 +49,7 @@ void kernel_main(void)
     vga_set_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
     vga_puts("================================================================\n");
     vga_puts("              VESPER KERNEL ACTIVE                             \n");
-    vga_puts("          Full-featured Educational OS  v0.3.0                 \n");
+    vga_puts("        True-Multitasking Educational OS  v0.4.0               \n");
     vga_puts("================================================================\n");
 
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
@@ -70,7 +71,7 @@ void kernel_main(void)
     vga_puts("  [OK] Heap allocator  (256 KB)\n");
 
     /* ---- Steps 4-6: GDT + TSS ----------------------------------------- */
-    tss_init(0x90000u);   /* initial kernel stack top (matches bootloader) */
+    tss_init(0x90000u);
     gdt_init();
     tss_flush();
     vga_set_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
@@ -90,12 +91,13 @@ void kernel_main(void)
     /* ---- Step 9: Timer ------------------------------------------------ */
     timer_init();
     vga_set_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-    vga_puts("  [OK] PIT timer       (IRQ0, 100 Hz)\n");
+    vga_printf("  [OK] PIT timer       (IRQ0, 100 Hz, preempt every %u ticks)\n",
+               (uint32_t)SCHED_SLICE);
 
     /* ---- Step 10: Keyboard -------------------------------------------- */
     keyboard_init();
     vga_set_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-    vga_puts("  [OK] Keyboard driver (IRQ1, interrupt-driven)\n");
+    vga_puts("  [OK] Keyboard driver (IRQ1, extended scancodes)\n");
 
     /* ---- Step 11: PMM ------------------------------------------------- */
     pmm_init();
@@ -107,7 +109,7 @@ void kernel_main(void)
     /* ---- Step 12: Paging ---------------------------------------------- */
     paging_init();
     vga_set_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-    vga_puts("  [OK] Paging enabled  (identity-map 0-8 MB)\n");
+    vga_puts("  [OK] Paging enabled  (identity-map 0-8 MB, per-process PDs)\n");
 
     /* ---- Step 13: Syscalls -------------------------------------------- */
     syscall_init();
@@ -117,9 +119,8 @@ void kernel_main(void)
     /* ---- Step 14: Processes ------------------------------------------- */
     process_init();
     vga_set_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-    vga_puts("  [OK] Scheduler       (co-operative, max ");
-    vga_print_uint(MAX_PROCESSES);
-    vga_puts(" processes)\n");
+    vga_printf("  [OK] Scheduler       (preemptive round-robin, max %u procs)\n",
+               (uint32_t)MAX_PROCESSES);
 
     /* ---- Step 15: ATA ------------------------------------------------- */
     if (ata_init()) {
@@ -150,7 +151,6 @@ void kernel_main(void)
 
     shell_run();   /* Never returns */
 
-    /* Safety net */
     while (1) {
         __asm__ volatile ("hlt");
     }

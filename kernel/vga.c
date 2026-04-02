@@ -195,3 +195,129 @@ void vga_print_hex(uint32_t n)
                     : (char)('A' + nibble - 10u));
     }
 }
+
+/* -------------------------------------------------------------------------
+ * vga_printf – lightweight printf for the VGA console
+ *
+ * Supported specifiers: %c %s %d %u %x %X %% and %0Nd zero-padded width.
+ * ---------------------------------------------------------------------- */
+
+static void vga_puthex(uint32_t n, int upper)
+{
+    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char buf[8];
+    int  i = 0;
+
+    if (n == 0) {
+        vga_putchar('0');
+        return;
+    }
+
+    while (n > 0 && i < 8) {
+        buf[i++] = digits[n & 0xFu];
+        n >>= 4u;
+    }
+
+    for (int j = i - 1; j >= 0; j--) {
+        vga_putchar(buf[j]);
+    }
+}
+
+/* Helper: print uint32_t with minimum width, zero-padded */
+static void vga_print_uint_padded(uint32_t n, int width)
+{
+    char  buf[10];
+    int   i = 0;
+    uint32_t tmp = n;
+
+    if (tmp == 0) {
+        buf[i++] = '0';
+    } else {
+        while (tmp > 0) {
+            buf[i++] = (char)('0' + tmp % 10u);
+            tmp /= 10u;
+        }
+    }
+
+    /* Zero-pad to requested width */
+    for (int pad = i; pad < width; pad++) {
+        vga_putchar('0');
+    }
+
+    /* Reverse digits */
+    for (int j = i - 1; j >= 0; j--) {
+        vga_putchar(buf[j]);
+    }
+}
+
+void vga_printf(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+
+    while (*fmt) {
+        if (*fmt != '%') {
+            vga_putchar(*fmt++);
+            continue;
+        }
+
+        fmt++;   /* skip '%' */
+
+        /* Optional '0' flag + width digit(s) */
+        int zero_pad = 0;
+        int width    = 0;
+
+        if (*fmt == '0') {
+            zero_pad = 1;
+            fmt++;
+        }
+        while (*fmt >= '1' && *fmt <= '9') {
+            width = width * 10 + (*fmt - '0');
+            fmt++;
+        }
+
+        char spec = *fmt++;
+        switch (spec) {
+        case 'c':
+            vga_putchar((char)va_arg(ap, int));
+            break;
+        case 's':
+            {
+                const char *s = va_arg(ap, const char *);
+                if (!s) { s = "(null)"; }
+                vga_puts(s);
+            }
+            break;
+        case 'd':
+            {
+                int32_t v = va_arg(ap, int32_t);
+                if (v < 0) {
+                    vga_putchar('-');
+                    vga_print_uint_padded((uint32_t)(-(int64_t)v), width > 1 ? width - 1 : 0);
+                } else {
+                    vga_print_uint_padded((uint32_t)v, zero_pad ? width : 0);
+                }
+            }
+            break;        case 'u':
+            vga_print_uint_padded(va_arg(ap, uint32_t), zero_pad ? width : 0);
+            break;
+        case 'x':
+            vga_puthex(va_arg(ap, uint32_t), 0);
+            break;
+        case 'X':
+            vga_puthex(va_arg(ap, uint32_t), 1);
+            break;
+        case '%':
+            vga_putchar('%');
+            break;
+        default:
+            vga_putchar('%');
+            if (zero_pad) { vga_putchar('0'); }
+            if (width > 0) { vga_putchar((char)('0' + (width % 10))); }
+            vga_putchar(spec);
+            break;
+        }
+    }
+
+    va_end(ap);
+}

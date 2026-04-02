@@ -61,7 +61,8 @@ KERNEL_C_SRCS  := $(KERNEL_DIR)/kernel.c   \
                   $(KERNEL_DIR)/syscall.c   \
                   $(KERNEL_DIR)/ata.c       \
                   $(KERNEL_DIR)/fs.c        \
-                  $(KERNEL_DIR)/elf.c
+                  $(KERNEL_DIR)/elf.c       \
+                  $(KERNEL_DIR)/rtc.c
 
 # Object files: kernel_entry.o must come FIRST so it lands at 0x1000
 KERNEL_OBJS := $(BUILD_DIR)/kernel_entry.o  \
@@ -105,7 +106,7 @@ clean:
 # -----------------------------------------------------------------------------
 $(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) | $(BUILD_DIR)
 	@echo "[IMG]  $@"
-	dd if=/dev/zero        of=$@ bs=512 count=2880   2>/dev/null
+	dd if=/dev/zero        of=$@ bs=512 count=8192   2>/dev/null
 	dd if=$(BOOT_BIN)      of=$@ bs=512 conv=notrunc 2>/dev/null
 	dd if=$(KERNEL_BIN)    of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
 

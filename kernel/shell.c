@@ -9,6 +9,7 @@
 #include "ata.h"
 #include "fs.h"
 #include "elf.h"
+#include "rtc.h"
 #include "string.h"
 
 /* Maximum number of characters accepted per command line */
@@ -16,6 +17,9 @@
 
 /* Shell prompt string */
 #define SHELL_PROMPT    "vesper> "
+
+/* Command history */
+#define HISTORY_SIZE    8
 
 /* -------------------------------------------------------------------------
  * Minimal string utilities  (no libc available)
@@ -54,7 +58,11 @@ static void cmd_help(void)
     vga_puts("  version          Show OS version information\n");
     vga_puts("  meminfo          Show heap + physical memory statistics\n");
     vga_puts("  uptime           Show system uptime\n");
+    vga_puts("  date             Show current date and time (RTC)\n");
     vga_puts("  ps               List running processes\n");
+    vga_puts("  kill <pid>       Terminate a process by PID\n");
+    vga_puts("  sleep <ms>       Sleep for N milliseconds\n");
+    vga_puts("  colortest        Display all 16 VGA colours\n");
     vga_puts("  mkfs             Format the VesperFS partition\n");
     vga_puts("  ls               List files in VesperFS\n");
     vga_puts("  cat <file>       Print file contents\n");
@@ -62,6 +70,10 @@ static void cmd_help(void)
     vga_puts("  run <file>       Load and execute an ELF32 binary from disk\n");
     vga_puts("  halt             Halt the CPU\n");
     vga_puts("  reboot           Reboot the system\n");
+    vga_puts("\n");
+    vga_set_color(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
+    vga_puts("  Up/Down arrows cycle through command history.\n");
+    vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 }
 
 static void cmd_clear(void)
@@ -78,17 +90,19 @@ static void cmd_echo(const char *args)
 static void cmd_version(void)
 {
     vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
-    vga_puts("VESPER OS  v0.3.0\n");
+    vga_puts("VESPER OS  v0.4.0\n");
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
     vga_puts("Architecture   : x86 32-bit Protected Mode\n");
     vga_puts("VGA buffer     : 0xB8000\n");
     vga_puts("Kernel base    : 0x1000\n");
     vga_puts("Interrupt model: IDT + 8259A PIC (IRQ0-15 -> INT 32-47)\n");
-    vga_puts("Keyboard       : PS/2 interrupt-driven (IRQ1)\n");
-    vga_puts("Timer          : PIT 100 Hz (IRQ0)\n");
+    vga_puts("Keyboard       : PS/2 interrupt-driven (IRQ1, extended scancodes)\n");
+    vga_puts("Timer          : PIT 100 Hz (IRQ0), preempt every 50 ms\n");
     vga_puts("Memory         : PMM bitmap + 256 KB heap + paging (0-8 MB)\n");
-    vga_puts("Scheduler      : co-operative round-robin\n");
-    vga_puts("Syscalls       : INT 0x80 (DPL=3)\n");
+    vga_puts("Scheduler      : preemptive round-robin (50 ms slice)\n");
+    vga_puts("Page dirs      : per-process (user processes get isolated PDs)\n");
+    vga_puts("Syscalls       : INT 0x80 (DPL=3), user-mode ring-3 support\n");
+    vga_puts("RTC            : CMOS real-time clock\n");
     vga_puts("Disk           : ATA PIO (primary master)\n");
     vga_puts("Filesystem     : VesperFS (LBA 129+)\n");
     vga_puts("ELF loader     : ELF32 static executables\n");
@@ -359,6 +373,95 @@ static void cmd_run(const char *name)
     process_yield();
 }
 
+static void cmd_date(void)
+{
+    rtc_time_t t;
+    rtc_read(&t);
+
+    /* Pad single-digit values with a leading zero */
+    vga_printf("Date: %u-%02u-%02u  Time: %02u:%02u:%02u\n",
+               (uint32_t)t.year,
+               (uint32_t)t.month,
+               (uint32_t)t.day,
+               (uint32_t)t.hour,
+               (uint32_t)t.minute,
+               (uint32_t)t.second);
+}
+
+static void cmd_kill(const char *args)
+{
+    /* Parse PID from args */
+    uint32_t pid = 0;
+    const char *p = args;
+    while (*p >= '0' && *p <= '9') {
+        pid = pid * 10u + (uint32_t)(*p - '0');
+        p++;
+    }
+
+    if (pid == 0) {
+        vga_puts("Usage: kill <pid>\n");
+        return;
+    }
+
+    if (process_kill(pid) == 0) {
+        vga_set_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+        vga_puts("Process ");
+        vga_print_uint(pid);
+        vga_puts(" terminated.\n");
+    } else {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("No such process: PID ");
+        vga_print_uint(pid);
+        vga_putchar('\n');
+    }
+    vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+}
+
+static void cmd_sleep(const char *args)
+{
+    uint32_t ms = 0;
+    const char *p = args;
+    while (*p >= '0' && *p <= '9') {
+        ms = ms * 10u + (uint32_t)(*p - '0');
+        p++;
+    }
+
+    if (ms == 0) {
+        vga_puts("Usage: sleep <milliseconds>\n");
+        return;
+    }
+
+    vga_puts("Sleeping ");
+    vga_print_uint(ms);
+    vga_puts(" ms...\n");
+    timer_sleep_ms(ms);
+    vga_puts("Done.\n");
+}
+
+static void cmd_colortest(void)
+{
+    static const char * const color_names[] = {
+        "BLACK   ", "BLUE    ", "GREEN   ", "CYAN    ",
+        "RED     ", "MAGENTA ", "BROWN   ", "LT_GREY ",
+        "DK_GREY ", "LT_BLUE ", "LT_GREEN", "LT_CYAN ",
+        "LT_RED  ", "LT_MAG  ", "YELLOW  ", "WHITE   "
+    };
+
+    vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+    vga_puts("VGA colour palette (foreground on black):\n");
+
+    for (int i = 0; i < 16; i++) {
+        vga_set_color((vga_color_t)i, VGA_COLOR_BLACK);
+        vga_puts("  ");
+        vga_puts(color_names[i]);
+        if ((i & 1) == 1) {
+            vga_putchar('\n');
+        }
+    }
+    vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+    vga_putchar('\n');
+}
+
 static void cmd_unknown(const char *cmd)
 {
     vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
@@ -373,9 +476,56 @@ static void cmd_unknown(const char *cmd)
  * Input / dispatch helpers
  * ---------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * Command history
+ * ---------------------------------------------------------------------- */
+static char history[HISTORY_SIZE][SHELL_BUF_SIZE];
+static int  history_count = 0;   /* total entries ever added */
+
+static void history_push(const char *cmd)
+{
+    if (cmd[0] == '\0') {
+        return;
+    }
+    int slot = history_count % HISTORY_SIZE;
+    strncpy(history[slot], cmd, SHELL_BUF_SIZE - 1);
+    history[slot][SHELL_BUF_SIZE - 1] = '\0';
+    history_count++;
+}
+
+/* history_get(0) = most recent, history_get(1) = one before, etc.
+ * Returns NULL if index is out of range. */
+static const char *history_get(int back)
+{
+    if (back <= 0 || back > history_count || back > HISTORY_SIZE) {
+        return (void *)0;
+    }
+    int slot = ((history_count - back) % HISTORY_SIZE + HISTORY_SIZE) % HISTORY_SIZE;
+    return history[slot];
+}
+
+/* -------------------------------------------------------------------------
+ * Input helpers: erase displayed characters back to start of input
+ * ---------------------------------------------------------------------- */
+static void erase_input(int len)
+{
+    for (int i = 0; i < len; i++) {
+        vga_putchar('\b');
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * read_line – read a line from the keyboard with history browsing
+ *
+ * Up arrow  → recall older entry
+ * Down arrow → recall newer entry (or clear if past newest)
+ * Backspace → delete one character
+ * Enter     → submit
+ * ---------------------------------------------------------------------- */
 static void read_line(char *buf, int max_len)
 {
-    int len = 0;
+    int len       = 0;
+    int hist_pos  = 0;   /* 0 = current (blank), 1 = newest, 2 = next older … */
 
     while (len < max_len - 1) {
         char c = keyboard_getchar();
@@ -383,15 +533,52 @@ static void read_line(char *buf, int max_len)
         if (c == '\n') {
             vga_putchar('\n');
             break;
+
         } else if (c == '\b') {
             if (len > 0) {
                 len--;
                 vga_putchar('\b');
             }
-        } else {
+
+        } else if ((unsigned char)c == KEY_UP) {
+            /* Scroll backwards through history */
+            int next_pos = hist_pos + 1;
+            const char *entry = history_get(next_pos);
+            if (entry) {
+                erase_input(len);
+                strncpy(buf, entry, (uint32_t)(max_len - 1));
+                buf[max_len - 1] = '\0';
+                len = (int)strlen(buf);
+                vga_puts(buf);
+                hist_pos = next_pos;
+            }
+
+        } else if ((unsigned char)c == KEY_DOWN) {
+            /* Scroll forwards (towards present) */
+            if (hist_pos > 0) {
+                erase_input(len);
+                hist_pos--;
+                if (hist_pos == 0) {
+                    /* Returned to blank current line */
+                    buf[0] = '\0';
+                    len    = 0;
+                } else {
+                    const char *entry = history_get(hist_pos);
+                    if (entry) {
+                        strncpy(buf, entry, (uint32_t)(max_len - 1));
+                        buf[max_len - 1] = '\0';
+                        len = (int)strlen(buf);
+                        vga_puts(buf);
+                    }
+                }
+            }
+
+        } else if ((unsigned char)c >= 0x20u && (unsigned char)c < 0x80u) {
+            /* Printable ASCII */
             buf[len++] = c;
             vga_putchar(c);
         }
+        /* Ignore other control characters / non-printable KEY_* constants */
     }
 
     buf[len] = '\0';
@@ -418,8 +605,20 @@ static void execute_command(char *cmd)
         cmd_meminfo();
     } else if (str_eq(cmd, "uptime")) {
         cmd_uptime();
+    } else if (str_eq(cmd, "date")) {
+        cmd_date();
     } else if (str_eq(cmd, "ps")) {
         cmd_ps();
+    } else if (str_startswith(cmd, "kill ")) {
+        cmd_kill(cmd + 5);
+    } else if (str_eq(cmd, "kill")) {
+        vga_puts("Usage: kill <pid>\n");
+    } else if (str_startswith(cmd, "sleep ")) {
+        cmd_sleep(cmd + 6);
+    } else if (str_eq(cmd, "sleep")) {
+        vga_puts("Usage: sleep <milliseconds>\n");
+    } else if (str_eq(cmd, "colortest")) {
+        cmd_colortest();
     } else if (str_eq(cmd, "mkfs")) {
         cmd_mkfs();
     } else if (str_eq(cmd, "ls")) {
@@ -464,6 +663,7 @@ void shell_run(void)
         vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
 
         read_line(buf, SHELL_BUF_SIZE);
+        history_push(buf);
         execute_command(buf);
     }
 }
