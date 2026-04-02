@@ -106,6 +106,10 @@ clean:
 # -----------------------------------------------------------------------------
 $(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) | $(BUILD_DIR)
 	@echo "[IMG]  $@"
+	# Disk layout:
+	#   Sector   0        : boot sector (512 B)
+	#   Sectors  1–128    : kernel binary (64 KB budget)
+	#   Sectors  129–8191 : VesperFS partition
 	dd if=/dev/zero        of=$@ bs=512 count=8192   2>/dev/null
 	dd if=$(BOOT_BIN)      of=$@ bs=512 conv=notrunc 2>/dev/null
 	dd if=$(KERNEL_BIN)    of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null

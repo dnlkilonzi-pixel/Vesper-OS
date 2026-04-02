@@ -293,12 +293,14 @@ void vga_printf(const char *fmt, ...)
                 int32_t v = va_arg(ap, int32_t);
                 if (v < 0) {
                     vga_putchar('-');
-                    vga_print_uint_padded((uint32_t)(-(int64_t)v), width > 1 ? width - 1 : 0);
+                    /* uint32_t cast of -v: correct even for INT32_MIN */
+                    vga_print_uint_padded((uint32_t)(-v), width > 1 ? width - 1 : 0);
                 } else {
                     vga_print_uint_padded((uint32_t)v, zero_pad ? width : 0);
                 }
             }
-            break;        case 'u':
+            break;
+        case 'u':
             vga_print_uint_padded(va_arg(ap, uint32_t), zero_pad ? width : 0);
             break;
         case 'x':

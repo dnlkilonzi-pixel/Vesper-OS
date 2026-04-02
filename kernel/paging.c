@@ -93,7 +93,7 @@ uint32_t paging_create_pd(void)
     }
 
     uint32_t *new_pd = (uint32_t *)pd_phys;   /* identity-mapped */
-    memset(new_pd, 0, PAGE_SIZE * sizeof(uint8_t));
+    memset(new_pd, 0, PAGE_SIZE);
 
     /* Copy kernel PDEs (first 8 MB = PDEs 0 and 1) into the new PD */
     new_pd[0] = page_directory[0];
@@ -121,7 +121,7 @@ int paging_alloc_user_pages(uint32_t pd_phys, uint32_t virt_base,
             if (!pt_phys) {
                 return -1;
             }
-            memset((void *)pt_phys, 0, PAGE_SIZE * sizeof(uint8_t));
+            memset((void *)pt_phys, 0, PAGE_SIZE);
             pd[pdi] = pt_phys | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
         }
 

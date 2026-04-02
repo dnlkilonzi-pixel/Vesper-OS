@@ -12,11 +12,13 @@
 #include "rtc.h"
 #include "string.h"
 
-/* Maximum number of characters accepted per command line */
-#define SHELL_BUF_SIZE  256
+#define NULL ((void *)0)
 
 /* Shell prompt string */
 #define SHELL_PROMPT    "vesper> "
+
+/* Maximum number of characters accepted per command line */
+#define SHELL_BUF_SIZE  256
 
 /* Command history */
 #define HISTORY_SIZE    8
@@ -493,12 +495,12 @@ static void history_push(const char *cmd)
     history_count++;
 }
 
-/* history_get(0) = most recent, history_get(1) = one before, etc.
- * Returns NULL if index is out of range. */
+/* history_get(1) = most recent, history_get(2) = one before that, etc.
+ * Returns NULL if index is out of range (never entered yet). */
 static const char *history_get(int back)
 {
     if (back <= 0 || back > history_count || back > HISTORY_SIZE) {
-        return (void *)0;
+        return NULL;
     }
     int slot = ((history_count - back) % HISTORY_SIZE + HISTORY_SIZE) % HISTORY_SIZE;
     return history[slot];

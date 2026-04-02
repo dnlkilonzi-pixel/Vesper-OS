@@ -92,7 +92,11 @@ void pmm_init(void)
             pmm_free++;
             pmm_total++;
         }
-        /* first 256 frames stay marked used */
+        /*
+         * Count the first 0x100000/PAGE_SIZE reserved frames toward
+         * pmm_total so that free% statistics are accurate.  These
+         * frames remain set (used) in the bitmap.
+         */
         pmm_total += 0x100000u / PMM_PAGE_SIZE;
         return;
     }

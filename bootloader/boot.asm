@@ -20,7 +20,7 @@
 
 ; Kernel load address and sector count
 KERNEL_OFFSET  equ 0x1000   ; Physical address to load kernel into
-KERNEL_SECTORS equ 128      ; Number of 512-byte sectors to load (64 KB max)
+KERNEL_SECTORS equ 128      ; sectors to load (128 × 512 = 64 KB)
 
 ; E820 memory-map storage (safe area below the boot sector)
 ; Layout: [0x0500] uint16_t count, [0x0502] e820_entry_t[32]
