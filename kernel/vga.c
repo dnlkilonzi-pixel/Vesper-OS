@@ -271,7 +271,7 @@ void vga_printf(const char *fmt, ...)
             zero_pad = 1;
             fmt++;
         }
-        while (*fmt >= '1' && *fmt <= '9') {
+        while (*fmt >= '0' && *fmt <= '9') {
             width = width * 10 + (*fmt - '0');
             fmt++;
         }

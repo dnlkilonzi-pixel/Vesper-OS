@@ -154,7 +154,13 @@ uint32_t elf_load_user(const void *data, uint32_t len, uint32_t pd_phys)
                 return 0u;
             }
 
-            uint8_t *dst = (uint8_t *)phys_page;   /* identity-mapped */
+            /*
+             * phys_page is a PMM frame (always in 0–8 MB) which is
+             * identity-mapped in the kernel PD (phys == virt).
+             * Writing to phys_page here writes to the physical frame that
+             * will be mapped at virt_page in the user PD.
+             */
+            uint8_t *dst = (uint8_t *)phys_page;
             memset(dst, 0, 4096u);
 
             /* Determine the overlap of this page with the file-data region */
