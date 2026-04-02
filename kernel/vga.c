@@ -1,4 +1,9 @@
 #include "vga.h"
+#include "port_io.h"
+
+/* VGA CRTC index/data ports used to reposition the hardware cursor */
+#define VGA_CRTC_IDX  0x3D4
+#define VGA_CRTC_DATA 0x3D5
 
 /* VGA text-mode buffer (volatile: writes must reach hardware every time) */
 static volatile uint16_t * const vga_buffer =
@@ -26,6 +31,24 @@ static inline uint16_t vga_entry(char c, uint8_t color)
 static inline uint8_t make_color(vga_color_t fg, vga_color_t bg)
 {
     return (uint8_t)fg | ((uint8_t)bg << 4);
+}
+
+/* Move the VGA controller's hardware cursor to (vga_row, vga_col).
+ *
+ * The 6845/VGA CRTC exposes the cursor position through two 8-bit registers
+ * accessed via an index/data pair:
+ *   Reg 0x0E – cursor position high byte
+ *   Reg 0x0F – cursor position low byte
+ *
+ * The position is a linear offset: row * VGA_COLS + col.
+ */
+static void vga_update_cursor(void)
+{
+    uint16_t pos = (uint16_t)(vga_row * VGA_COLS + vga_col);
+    outb(VGA_CRTC_IDX,  0x0E);
+    outb(VGA_CRTC_DATA, (uint8_t)((pos >> 8) & 0xFF));
+    outb(VGA_CRTC_IDX,  0x0F);
+    outb(VGA_CRTC_DATA, (uint8_t)(pos & 0xFF));
 }
 
 /* Scroll the entire screen up by one row and clear the last line */
@@ -77,6 +100,7 @@ void vga_clear(void)
     }
     vga_row = 0;
     vga_col = 0;
+    vga_update_cursor();
 }
 
 /* Write one character to the current cursor position, advancing as needed */
@@ -112,6 +136,8 @@ void vga_putchar(char c)
     if (vga_row >= VGA_ROWS) {
         vga_scroll();
     }
+
+    vga_update_cursor();
 }
 
 /* Write a NUL-terminated string */
@@ -128,6 +154,7 @@ void vga_set_cursor(int row, int col)
     if (row >= 0 && row < VGA_ROWS && col >= 0 && col < VGA_COLS) {
         vga_row = row;
         vga_col = col;
+        vga_update_cursor();
     }
 }
 
