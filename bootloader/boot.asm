@@ -19,8 +19,13 @@
 [ORG 0x7C00]
 
 ; Kernel load address and sector count
-KERNEL_OFFSET equ 0x1000   ; Physical address to load kernel into
-KERNEL_SECTORS equ 32      ; Number of 512-byte sectors to load (16 KB max)
+KERNEL_OFFSET  equ 0x1000   ; Physical address to load kernel into
+KERNEL_SECTORS equ 128      ; Number of 512-byte sectors to load (64 KB max)
+
+; E820 memory-map storage (safe area below the boot sector)
+; Layout: [0x0500] uint16_t count, [0x0502] e820_entry_t[32]
+MMAP_ADDR      equ 0x0500
+MMAP_MAX       equ 32
 
 ; =============================================================================
 ; Entry point
@@ -41,6 +46,9 @@ start:
     ; Print the loading banner
     mov si, MSG_LOADING
     call print_string
+
+    ; Detect available RAM via BIOS INT 15h / E820
+    call detect_memory
 
     ; Load the kernel from disk
     call load_kernel
@@ -83,6 +91,54 @@ load_kernel:
     mov dh, KERNEL_SECTORS  ; Number of sectors to read
     mov dl, [BOOT_DRIVE]    ; Drive number saved earlier
     call disk_load
+    ret
+
+; =============================================================================
+; detect_memory  –  Build an E820 memory map at MMAP_ADDR
+;
+; Result at 0x0500:
+;   [0x0500] uint16_t count          – number of valid entries (0 if failed)
+;   [0x0502] e820_entry_t[32]        – entries, each 20 bytes
+; =============================================================================
+detect_memory:
+    pusha
+
+    ; ES:DI → buffer for E820 entries  (skip 2-byte count header)
+    xor  ax, ax
+    mov  es, ax
+    mov  di, MMAP_ADDR + 2
+
+    xor  ebx, ebx            ; EBX=0 signals "first call"
+    xor  bp,  bp             ; BP will count valid entries
+    mov  edx, 0x534D4150     ; 'SMAP' – expected return signature
+
+.e820_loop:
+    mov  eax, 0xE820
+    mov  ecx, 20             ; request 20-byte entries
+    int  0x15
+    jc   .e820_done          ; carry set = done or error
+
+    cmp  eax, 0x534D4150     ; verify BIOS returned 'SMAP'
+    jne  .e820_done
+
+    cmp  cx, 20              ; did we get at least 20 bytes?
+    jl   .e820_skip
+
+    inc  bp                  ; count this entry
+    add  di, 20              ; advance buffer pointer
+
+    cmp  bp, MMAP_MAX        ; stop if table full
+    jge  .e820_done
+
+.e820_skip:
+    test ebx, ebx            ; EBX=0 means this was the last entry
+    jnz  .e820_loop
+
+.e820_done:
+    ; Store entry count as a 16-bit word at MMAP_ADDR
+    mov  [MMAP_ADDR], bp
+
+    popa
     ret
 
 ; =============================================================================

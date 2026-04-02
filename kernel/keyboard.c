@@ -2,6 +2,7 @@
 #include "port_io.h"
 #include "isr.h"
 #include "pic.h"
+#include "process.h"
 
 /* -------------------------------------------------------------------------
  * Scancode → ASCII translation tables (PS/2 Scancode Set 1)
@@ -151,6 +152,10 @@ static void kb_push(char c)
         kb_buf[kb_tail] = c;
         kb_tail         = next;
     }
+    /* Wake any process that blocked waiting for keyboard input */
+    if (current_process && current_process->state == PROC_BLOCKED) {
+        process_wake(current_process);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -213,11 +218,13 @@ void keyboard_init(void)
 
 char keyboard_getchar(void)
 {
-    /* Spin-wait until the IRQ handler deposits a character.
-     * HLT yields the CPU until the next interrupt fires, making this
-     * an efficient idle rather than a hot busy-loop. */
+    /* Yield to other processes while the buffer is empty */
     while (kb_head == kb_tail) {
-        __asm__ volatile ("hlt");
+        if (current_process) {
+            process_block();   /* marks BLOCKED and yields */
+        } else {
+            __asm__ volatile ("hlt");
+        }
     }
 
     char c  = kb_buf[kb_head];

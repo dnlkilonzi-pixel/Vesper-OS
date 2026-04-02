@@ -18,6 +18,7 @@
 [BITS 32]
 
 [EXTERN interrupt_handler]   ; C dispatcher defined in isr.c
+[EXTERN syscall_handler]     ; C syscall dispatcher defined in syscall.c
 
 ; =========================================================================
 ; Macros
@@ -100,6 +101,30 @@ IRQ 12, 44   ; IRQ12 – PS/2 Mouse
 IRQ 13, 45   ; IRQ13 – FPU / coprocessor error
 IRQ 14, 46   ; IRQ14 – Primary ATA hard disk
 IRQ 15, 47   ; IRQ15 – Secondary ATA hard disk
+
+; =========================================================================
+; INT 0x80 – system-call gate (DPL=3, callable from ring 3)
+;
+; Calling convention (Linux i386 ABI):
+;   EAX = syscall number
+;   EBX = arg0,  ECX = arg1,  EDX = arg2
+;
+; We save the live registers that syscall_handler might clobber, call the
+; C dispatcher with the three arguments, then restore and IRET.
+; =========================================================================
+global isr_syscall
+isr_syscall:
+    pushad              ; save all GP registers
+
+    push edx            ; arg2
+    push ecx            ; arg1
+    push ebx            ; arg0
+    push eax            ; syscall number
+    call syscall_handler
+    add  esp, 16        ; clean up four arguments
+
+    popad               ; restore GP registers
+    iret
 
 ; =========================================================================
 ; common_stub – unified register-save / restore frame
