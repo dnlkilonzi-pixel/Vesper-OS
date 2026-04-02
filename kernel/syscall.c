@@ -42,9 +42,14 @@ void syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx)
         break;
 
     case SYS_GETPID:
-        /* Return value goes back via EAX; caller reads it after INT 0x80 */
-        /* (The stub would need to write back to the saved-register frame,
-         *  which we keep simple for now by just printing a note.) */
+        /*
+         * SYS_GETPID requires writing the PID back into the saved EAX on
+         * the caller's interrupt frame.  The current stub only passes EAX
+         * by value so we cannot yet propagate the return value.  The call
+         * is acknowledged as a no-op until the interrupt frame is passed
+         * by pointer to syscall_handler.
+         */
+        (void)ecx;
         break;
 
     case SYS_SLEEP:

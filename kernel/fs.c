@@ -235,8 +235,9 @@ int fs_write_new(const char *name, const void *data, uint32_t len)
      * Find a free or matching (overwrite) directory slot.
      * Also track the highest used data LBA to place new data after it.
      */
-    int      target_slot = -1;
-    uint32_t next_data_lba = FS_DATA_LBA;
+    int      target_slot    = -1;
+    int      is_overwrite   = 0;       /* 1 when replacing an existing file */
+    uint32_t next_data_lba  = FS_DATA_LBA;
 
     for (uint32_t i = 0; i < FS_MAX_FILES; i++) {
         const fs_dirent_t *e = dir_entry(i);
@@ -244,7 +245,8 @@ int fs_write_new(const char *name, const void *data, uint32_t len)
         if (e->name[0] != '\0' && e->flags != 1u) {
             /* Active entry – check if we're overwriting it */
             if (strcmp(e->name, name) == 0) {
-                target_slot = (int)i;
+                target_slot  = (int)i;
+                is_overwrite = 1;
             }
             /* Track end of this file's data to avoid overlap */
             uint32_t end = e->start_lba +
@@ -292,7 +294,9 @@ int fs_write_new(const char *name, const void *data, uint32_t len)
         return -1;
     }
 
-    /* Update superblock num_files */
-    sb.num_files++;
+    /* Update superblock num_files only when a new file is created */
+    if (!is_overwrite) {
+        sb.num_files++;
+    }
     return write_super(&sb);
 }

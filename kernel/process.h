@@ -70,6 +70,9 @@ void process_block(void);
 /* Make a BLOCKED process READY so it can be scheduled again */
 void process_wake(process_t *p);
 
+/* Wake every BLOCKED process (e.g. after a keyboard event) */
+void process_wake_all_blocked(void);
+
 /*
  * Print a one-line summary of every non-UNUSED process to the VGA console
  * (used by the 'ps' shell command).

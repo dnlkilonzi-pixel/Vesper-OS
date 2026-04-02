@@ -152,10 +152,8 @@ static void kb_push(char c)
         kb_buf[kb_tail] = c;
         kb_tail         = next;
     }
-    /* Wake any process that blocked waiting for keyboard input */
-    if (current_process && current_process->state == PROC_BLOCKED) {
-        process_wake(current_process);
-    }
+    /* Wake all processes that blocked waiting for keyboard input */
+    process_wake_all_blocked();
 }
 
 /* -------------------------------------------------------------------------

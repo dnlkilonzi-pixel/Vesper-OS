@@ -2,10 +2,12 @@
 #include "string.h"
 #include "vga.h"
 
+#define NULL ((void *)0)
+
 /* -------------------------------------------------------------------------
  * Module-level state
  * ---------------------------------------------------------------------- */
-process_t  *current_process                = (process_t *)0;
+process_t  *current_process                = NULL;
 static process_t  process_table[MAX_PROCESSES];
 static uint32_t   next_pid = 0;
 
@@ -61,7 +63,7 @@ process_t *process_create(const char *name, void (*entry)(void))
         }
     }
     if (i == MAX_PROCESSES) {
-        return (process_t *)0;   /* table full */
+        return NULL;   /* table full */
     }
 
     process_t *p = &process_table[i];
@@ -114,6 +116,20 @@ void process_wake(process_t *p)
 {
     if (p && p->state == PROC_BLOCKED) {
         p->state = PROC_READY;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * process_wake_all_blocked – wake every BLOCKED process
+ * Called from IRQ context (e.g. keyboard data ready) to avoid a situation
+ * where multiple processes waiting for input are missed.
+ * ---------------------------------------------------------------------- */
+void process_wake_all_blocked(void)
+{
+    for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i].state == PROC_BLOCKED) {
+            process_table[i].state = PROC_READY;
+        }
     }
 }
 

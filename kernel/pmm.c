@@ -66,12 +66,17 @@ void pmm_init(void)
 
     /*
      * Read the E820 memory map stored by the bootloader at 0x0500.
-     * Store the address in a volatile variable so the compiler cannot
-     * constant-fold it to "near zero" and emit spurious array-bounds
-     * warnings about a fixed physical address we deliberately use.
+     * GCC's -Warray-bounds fires a false positive here because 0x0500 is a
+     * small constant integer that its analyser assumes is "near zero" (i.e.
+     * likely NULL + small offset).  In a bare-metal kernel 0x0500 is a
+     * perfectly valid physical address; the pragma silences the false
+     * positive for this entire E820-reading block.
      */
-    volatile uint32_t mmap_addr = BOOT_MMAP_ADDR;
-    const boot_mmap_t *mmap = (const boot_mmap_t *)mmap_addr;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+
+    const boot_mmap_t *mmap =
+        (const boot_mmap_t *)(uintptr_t)BOOT_MMAP_ADDR;
 
     if (mmap->count == 0) {
         /*
@@ -88,7 +93,7 @@ void pmm_init(void)
             pmm_total++;
         }
         /* first 256 frames stay marked used */
-        pmm_total += 256u;
+        pmm_total += 0x100000u / PMM_PAGE_SIZE;
         return;
     }
 
@@ -124,18 +129,15 @@ void pmm_init(void)
         pmm_total += end_frame - start_frame;
     }
 
+#pragma GCC diagnostic pop
+
     /*
-     * Re-mark frames that are definitely occupied:
-     *
-     *   0x0000 – 0x0FFF  : BIOS IVT + data area
-     *   0x7C00 – 0x7FFF  : boot sector
-     *   0x1000 – 0x1FFFF : kernel binary (up to 120 KB; generous upper bound)
-     *   0x8F000 – 0x90000: kernel stack
-     *
-     * We simply reserve the entire first 1 MB (0–256 frames) which covers
-     * all of the above and avoids fragile arithmetic here.
+     * Re-mark the first 1 MB of physical memory as reserved regardless of
+     * what the E820 map said.  This protects the BIOS IVT (0x0000), the
+     * E820 map itself (0x0500), the boot sector (0x7C00), the kernel binary
+     * (starting at 0x1000), and the kernel stack (below 0x90000).
      */
-    pmm_reserve_range(0x0, 0x100000u);   /* first 1 MB → 256 frames */
+    pmm_reserve_range(0x0u, 0x100000u);   /* first 1 MB = 0x100000/PAGE_SIZE frames */
 }
 
 /* -------------------------------------------------------------------------
