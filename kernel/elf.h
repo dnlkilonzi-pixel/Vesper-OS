@@ -64,4 +64,32 @@ typedef struct {
  */
 uint32_t elf_load(const void *data, uint32_t len);
 
+/*
+ * elf_load_user – load an ELF32 binary into a user-mode page directory.
+ *
+ * For each PT_LOAD segment, physical frames are allocated (via PMM) and
+ * mapped into @pd_phys at the segment's virtual address with the
+ * PAGE_USER flag set.  Segment data is written to the physical frames
+ * (accessible via the kernel identity map).  BSS pages are zeroed.
+ *
+ * @data    : pointer to the ELF32 binary in kernel memory
+ * @len     : size of the binary in bytes
+ * @pd_phys : physical address of the destination page directory
+ *            (must have been created with paging_create_pd())
+ *
+ * Returns the user-mode entry-point virtual address, or 0 on error.
+ */
+uint32_t elf_load_user(const void *data, uint32_t len, uint32_t pd_phys);
+
+/*
+ * User address-space layout constants.
+ *
+ * User-mode ELF binaries should be linked to load at USER_LOAD_BASE.
+ * The user stack occupies USER_STACK_PAGES × 4 KB just above USER_LOAD_BASE,
+ * growing downward from USER_STACK_TOP.
+ */
+#define USER_LOAD_BASE   0x01000000u   /* ELF virtual load address  */
+#define USER_STACK_TOP   0x01020000u   /* user stack grows down from here */
+#define USER_STACK_PAGES 4u            /* 16 KB user stack          */
+
 #endif /* ELF_H */

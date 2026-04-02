@@ -6,6 +6,7 @@
 #include "timer.h"
 #include "pmm.h"
 #include "process.h"
+#include "paging.h"
 #include "ata.h"
 #include "fs.h"
 #include "elf.h"
@@ -69,7 +70,9 @@ static void cmd_help(void)
     vga_puts("  ls               List files in VesperFS\n");
     vga_puts("  cat <file>       Print file contents\n");
     vga_puts("  write <f> <txt>  Write text to a file\n");
-    vga_puts("  run <file>       Load and execute an ELF32 binary from disk\n");
+    vga_puts("  rm <file>        Delete a file from VesperFS\n");
+    vga_puts("  run <file>       Load ELF32; spawn as kernel thread\n");
+    vga_puts("  exec <file>      Load ELF32; spawn as ring-3 user process\n");
     vga_puts("  halt             Halt the CPU\n");
     vga_puts("  reboot           Reboot the system\n");
     vga_puts("\n");
@@ -92,7 +95,7 @@ static void cmd_echo(const char *args)
 static void cmd_version(void)
 {
     vga_set_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
-    vga_puts("VESPER OS  v0.4.0\n");
+    vga_puts("VESPER OS  v0.5.0\n");
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
     vga_puts("Architecture   : x86 32-bit Protected Mode\n");
     vga_puts("VGA buffer     : 0xB8000\n");
@@ -103,11 +106,13 @@ static void cmd_version(void)
     vga_puts("Memory         : PMM bitmap + 256 KB heap + paging (0-8 MB)\n");
     vga_puts("Scheduler      : preemptive round-robin (50 ms slice)\n");
     vga_puts("Page dirs      : per-process (user processes get isolated PDs)\n");
-    vga_puts("Syscalls       : INT 0x80 (DPL=3), user-mode ring-3 support\n");
+    vga_puts("Syscalls       : INT 0x80 (DPL=3), 13 syscalls (0-12)\n");
+    vga_puts("File I/O       : SYS_OPEN/READ/CLOSE via global FD table\n");
+    vga_puts("IPC            : ring-buffer pipes (SYS_PIPE_CREATE/WRITE/READ)\n");
     vga_puts("RTC            : CMOS real-time clock\n");
     vga_puts("Disk           : ATA PIO (primary master)\n");
-    vga_puts("Filesystem     : VesperFS (LBA 129+)\n");
-    vga_puts("ELF loader     : ELF32 static executables\n");
+    vga_puts("Filesystem     : VesperFS (LBA 129+), supports create/read/delete\n");
+    vga_puts("ELF loader     : ELF32 (kernel threads + ring-3 user processes)\n");
 }
 
 static void cmd_meminfo(void)
@@ -464,6 +469,125 @@ static void cmd_colortest(void)
     vga_putchar('\n');
 }
 
+static void cmd_rm(const char *name)
+{
+    if (name[0] == '\0') {
+        vga_puts("Usage: rm <filename>\n");
+        return;
+    }
+    if (!fs_init()) {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("No VesperFS. Run 'mkfs' first.\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        return;
+    }
+    if (fs_delete(name) == 0) {
+        vga_set_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+        vga_puts("Deleted: ");
+        vga_puts(name);
+        vga_putchar('\n');
+    } else {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("File not found: ");
+        vga_puts(name);
+        vga_putchar('\n');
+    }
+    vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+}
+
+/*
+ * cmd_exec – load an ELF32 binary from VesperFS into an isolated user-mode
+ *            page directory and spawn it as a ring-3 process.
+ *
+ * The ELF binary must be linked with:
+ *   - entry at or near USER_LOAD_BASE (0x01000000)
+ *   - available stack at USER_STACK_TOP (0x01020000) growing downward
+ */
+static void cmd_exec(const char *name)
+{
+    if (name[0] == '\0') {
+        vga_puts("Usage: exec <filename>\n");
+        return;
+    }
+    if (!fs_init()) {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("No VesperFS. Run 'mkfs' first.\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        return;
+    }
+
+    fs_file_t f;
+    if (fs_open(&f, name) != 0) {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("File not found: ");
+        vga_puts(name);
+        vga_putchar('\n');
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        return;
+    }
+
+    if (f.size > RUN_BUF_SIZE) {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("File too large (max 64 KB).\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        fs_close(&f);
+        return;
+    }
+
+    uint32_t nread = fs_read(&f, run_buf, f.size);
+    fs_close(&f);
+
+    /* Allocate a page directory for the new user process */
+    uint32_t pd_phys = paging_create_pd();
+    if (!pd_phys) {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("Out of physical memory.\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        return;
+    }
+
+    /* Load ELF segments into the user PD with PAGE_USER */
+    uint32_t entry = elf_load_user(run_buf, nread, pd_phys);
+    if (entry == 0u) {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("Not a valid ELF32 binary.\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        paging_destroy_pd(pd_phys);
+        return;
+    }
+
+    /* Allocate a user-mode stack (grows downward from USER_STACK_TOP) */
+    uint32_t stack_base = USER_STACK_TOP - USER_STACK_PAGES * 4096u;
+    if (paging_alloc_user_pages(pd_phys, stack_base, USER_STACK_PAGES) != 0) {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("Failed to allocate user stack.\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        paging_destroy_pd(pd_phys);
+        return;
+    }
+
+    process_t *p = process_create_user(name, entry, USER_STACK_TOP, pd_phys);
+    if (!p) {
+        vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        vga_puts("Process table full.\n");
+        vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+        paging_destroy_pd(pd_phys);
+        return;
+    }
+
+    vga_set_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+    vga_puts("Spawned user-mode PID ");
+    vga_print_uint(p->pid);
+    vga_puts(": ");
+    vga_puts(name);
+    vga_puts(" (entry=");
+    vga_print_hex(entry);
+    vga_puts(")\n");
+    vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+
+    process_yield();
+}
+
 static void cmd_unknown(const char *cmd)
 {
     vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
@@ -633,10 +757,18 @@ static void execute_command(char *cmd)
         cmd_write(cmd + 6);
     } else if (str_eq(cmd, "write")) {
         vga_puts("Usage: write <filename> <text>\n");
+    } else if (str_startswith(cmd, "rm ")) {
+        cmd_rm(cmd + 3);
+    } else if (str_eq(cmd, "rm")) {
+        vga_puts("Usage: rm <filename>\n");
     } else if (str_startswith(cmd, "run ")) {
         cmd_run(cmd + 4);
     } else if (str_eq(cmd, "run")) {
         vga_puts("Usage: run <filename>\n");
+    } else if (str_startswith(cmd, "exec ")) {
+        cmd_exec(cmd + 5);
+    } else if (str_eq(cmd, "exec")) {
+        vga_puts("Usage: exec <filename>\n");
     } else if (str_eq(cmd, "halt")) {
         cmd_halt();
     } else if (str_eq(cmd, "reboot")) {

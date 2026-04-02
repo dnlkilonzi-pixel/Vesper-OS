@@ -300,3 +300,40 @@ int fs_write_new(const char *name, const void *data, uint32_t len)
     }
     return write_super(&sb);
 }
+
+/* -------------------------------------------------------------------------
+ * fs_delete – mark a file as deleted in the directory
+ * ---------------------------------------------------------------------- */
+int fs_delete(const char *name)
+{
+    if (!name || name[0] == '\0') {
+        return -1;
+    }
+
+    if (read_dir() != 0) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < FS_MAX_FILES; i++) {
+        fs_dirent_t *e = dir_entry(i);
+        if (e->name[0] == '\0' || e->flags == 1u) {
+            continue;
+        }
+        if (strcmp(e->name, name) == 0) {
+            e->flags = 1u;   /* mark as deleted */
+            if (write_dir() != 0) {
+                return -1;
+            }
+
+            /* Decrement num_files in the superblock */
+            fs_super_t sb;
+            if (read_super(&sb) == 0 && sb.num_files > 0) {
+                sb.num_files--;
+                write_super(&sb);
+            }
+            return 0;
+        }
+    }
+
+    return -1;   /* file not found */
+}

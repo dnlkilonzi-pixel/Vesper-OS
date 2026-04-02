@@ -108,22 +108,41 @@ IRQ 15, 47   ; IRQ15 – Secondary ATA hard disk
 ; Calling convention (Linux i386 ABI):
 ;   EAX = syscall number
 ;   EBX = arg0,  ECX = arg1,  EDX = arg2
+;   Return value in EAX (written by syscall_handler via regs->eax).
 ;
-; We save the live registers that syscall_handler might clobber, call the
-; C dispatcher with the three arguments, then restore and IRET.
+; We build the same register frame as common_stub so that the C handler
+; receives a full registers_t* and can set regs->eax as the return value.
+; After the handler returns, POPA restores the (possibly modified) EAX.
 ; =========================================================================
 global isr_syscall
 isr_syscall:
-    pushad              ; save all GP registers
+    push dword 0        ; dummy err_code
+    push dword 0x80     ; int_no = 0x80
 
-    push edx            ; arg2
-    push ecx            ; arg1
-    push ebx            ; arg0
-    push eax            ; syscall number
+    pusha               ; save EAX (syscall#), ECX, EDX, EBX, ESP, EBP, ESI, EDI
+
+    push ds
+    push es
+    push fs
+    push gs
+
+    mov  ax, 0x10       ; kernel data segment
+    mov  ds, ax
+    mov  es, ax
+    mov  fs, ax
+    mov  gs, ax
+
+    push esp            ; registers_t *regs
     call syscall_handler
-    add  esp, 16        ; clean up four arguments
+    add  esp, 4
 
-    popad               ; restore GP registers
+    pop  gs
+    pop  fs
+    pop  es
+    pop  ds
+
+    popa                ; restores EAX = return value written by handler
+    add  esp, 8         ; discard int_no + err_code
     iret
 
 ; =========================================================================

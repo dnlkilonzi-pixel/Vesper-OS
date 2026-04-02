@@ -62,7 +62,9 @@ KERNEL_C_SRCS  := $(KERNEL_DIR)/kernel.c   \
                   $(KERNEL_DIR)/ata.c       \
                   $(KERNEL_DIR)/fs.c        \
                   $(KERNEL_DIR)/elf.c       \
-                  $(KERNEL_DIR)/rtc.c
+                  $(KERNEL_DIR)/rtc.c       \
+                  $(KERNEL_DIR)/pipe.c      \
+                  $(KERNEL_DIR)/fd.c
 
 # Object files: kernel_entry.o must come FIRST so it lands at 0x1000
 KERNEL_OBJS := $(BUILD_DIR)/kernel_entry.o  \

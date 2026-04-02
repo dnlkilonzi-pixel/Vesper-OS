@@ -85,4 +85,10 @@ void fs_close(fs_file_t *f);
  */
 int fs_write_new(const char *name, const void *data, uint32_t len);
 
+/*
+ * fs_delete – mark a file as deleted in the directory.
+ * Returns 0 on success, -1 if the file was not found.
+ */
+int fs_delete(const char *name);
+
 #endif /* FS_H */
