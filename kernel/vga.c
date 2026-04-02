@@ -1,4 +1,9 @@
 #include "vga.h"
+#include "port_io.h"
+
+/* VGA CRTC index/data ports used to reposition the hardware cursor */
+#define VGA_CRTC_IDX  0x3D4
+#define VGA_CRTC_DATA 0x3D5
 
 /* VGA text-mode buffer (volatile: writes must reach hardware every time) */
 static volatile uint16_t * const vga_buffer =
@@ -26,6 +31,24 @@ static inline uint16_t vga_entry(char c, uint8_t color)
 static inline uint8_t make_color(vga_color_t fg, vga_color_t bg)
 {
     return (uint8_t)fg | ((uint8_t)bg << 4);
+}
+
+/* Move the VGA controller's hardware cursor to (vga_row, vga_col).
+ *
+ * The 6845/VGA CRTC exposes the cursor position through two 8-bit registers
+ * accessed via an index/data pair:
+ *   Reg 0x0E – cursor position high byte
+ *   Reg 0x0F – cursor position low byte
+ *
+ * The position is a linear offset: row * VGA_COLS + col.
+ */
+static void vga_update_cursor(void)
+{
+    uint16_t pos = (uint16_t)(vga_row * VGA_COLS + vga_col);
+    outb(VGA_CRTC_IDX,  0x0E);
+    outb(VGA_CRTC_DATA, (uint8_t)((pos >> 8) & 0xFF));
+    outb(VGA_CRTC_IDX,  0x0F);
+    outb(VGA_CRTC_DATA, (uint8_t)(pos & 0xFF));
 }
 
 /* Scroll the entire screen up by one row and clear the last line */
@@ -77,6 +100,7 @@ void vga_clear(void)
     }
     vga_row = 0;
     vga_col = 0;
+    vga_update_cursor();
 }
 
 /* Write one character to the current cursor position, advancing as needed */
@@ -112,6 +136,8 @@ void vga_putchar(char c)
     if (vga_row >= VGA_ROWS) {
         vga_scroll();
     }
+
+    vga_update_cursor();
 }
 
 /* Write a NUL-terminated string */
@@ -128,6 +154,7 @@ void vga_set_cursor(int row, int col)
     if (row >= 0 && row < VGA_ROWS && col >= 0 && col < VGA_COLS) {
         vga_row = row;
         vga_col = col;
+        vga_update_cursor();
     }
 }
 
@@ -167,4 +194,132 @@ void vga_print_hex(uint32_t n)
                     ? (char)('0' + nibble)
                     : (char)('A' + nibble - 10u));
     }
+}
+
+/* -------------------------------------------------------------------------
+ * vga_printf – lightweight printf for the VGA console
+ *
+ * Supported specifiers: %c %s %d %u %x %X %% and %0Nd zero-padded width.
+ * ---------------------------------------------------------------------- */
+
+static void vga_puthex(uint32_t n, int upper)
+{
+    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char buf[8];
+    int  i = 0;
+
+    if (n == 0) {
+        vga_putchar('0');
+        return;
+    }
+
+    while (n > 0 && i < 8) {
+        buf[i++] = digits[n & 0xFu];
+        n >>= 4u;
+    }
+
+    for (int j = i - 1; j >= 0; j--) {
+        vga_putchar(buf[j]);
+    }
+}
+
+/* Helper: print uint32_t with minimum width, zero-padded */
+static void vga_print_uint_padded(uint32_t n, int width)
+{
+    char  buf[10];
+    int   i = 0;
+    uint32_t tmp = n;
+
+    if (tmp == 0) {
+        buf[i++] = '0';
+    } else {
+        while (tmp > 0) {
+            buf[i++] = (char)('0' + tmp % 10u);
+            tmp /= 10u;
+        }
+    }
+
+    /* Zero-pad to requested width */
+    for (int pad = i; pad < width; pad++) {
+        vga_putchar('0');
+    }
+
+    /* Reverse digits */
+    for (int j = i - 1; j >= 0; j--) {
+        vga_putchar(buf[j]);
+    }
+}
+
+void vga_printf(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+
+    while (*fmt) {
+        if (*fmt != '%') {
+            vga_putchar(*fmt++);
+            continue;
+        }
+
+        fmt++;   /* skip '%' */
+
+        /* Optional '0' flag + width digit(s) */
+        int zero_pad = 0;
+        int width    = 0;
+
+        if (*fmt == '0') {
+            zero_pad = 1;
+            fmt++;
+        }
+        while (*fmt >= '0' && *fmt <= '9') {
+            width = width * 10 + (*fmt - '0');
+            fmt++;
+        }
+
+        char spec = *fmt++;
+        switch (spec) {
+        case 'c':
+            vga_putchar((char)va_arg(ap, int));
+            break;
+        case 's':
+            {
+                const char *s = va_arg(ap, const char *);
+                if (!s) { s = "(null)"; }
+                vga_puts(s);
+            }
+            break;
+        case 'd':
+            {
+                int32_t v = va_arg(ap, int32_t);
+                if (v < 0) {
+                    vga_putchar('-');
+                    /* uint32_t cast of -v: correct even for INT32_MIN */
+                    vga_print_uint_padded((uint32_t)(-v), width > 1 ? width - 1 : 0);
+                } else {
+                    vga_print_uint_padded((uint32_t)v, zero_pad ? width : 0);
+                }
+            }
+            break;
+        case 'u':
+            vga_print_uint_padded(va_arg(ap, uint32_t), zero_pad ? width : 0);
+            break;
+        case 'x':
+            vga_puthex(va_arg(ap, uint32_t), 0);
+            break;
+        case 'X':
+            vga_puthex(va_arg(ap, uint32_t), 1);
+            break;
+        case '%':
+            vga_putchar('%');
+            break;
+        default:
+            vga_putchar('%');
+            if (zero_pad) { vga_putchar('0'); }
+            if (width > 0) { vga_putchar((char)('0' + (width % 10))); }
+            vga_putchar(spec);
+            break;
+        }
+    }
+
+    va_end(ap);
 }

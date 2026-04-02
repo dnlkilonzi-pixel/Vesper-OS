@@ -2,6 +2,7 @@
 #include "port_io.h"
 #include "isr.h"
 #include "pic.h"
+#include "process.h"
 
 /* -------------------------------------------------------------------------
  * Scancode → ASCII translation tables (PS/2 Scancode Set 1)
@@ -151,36 +152,66 @@ static void kb_push(char c)
         kb_buf[kb_tail] = c;
         kb_tail         = next;
     }
+    /* Wake all processes that blocked waiting for keyboard input */
+    process_wake_all_blocked();
 }
 
 /* -------------------------------------------------------------------------
  * Driver state
  * ---------------------------------------------------------------------- */
-static int shift_pressed = 0;
+static int     shift_pressed = 0;
+static int     extended_code = 0;   /* set when the 0xE0 prefix byte was seen */
 
 /* -------------------------------------------------------------------------
  * IRQ1 handler – called from the interrupt dispatcher in isr.c
  *
- * Reads the PS/2 scancode, updates Shift state, translates make-codes to
- * ASCII and pushes the result into the ring buffer.
+ * Reads the PS/2 scancode, handles the 0xE0 extended-scancode prefix,
+ * updates Shift state, translates make-codes to ASCII (or KEY_* constants
+ * for special keys) and pushes the result into the ring buffer.
  * ---------------------------------------------------------------------- */
 static void keyboard_irq_handler(registers_t *regs)
 {
-    (void)regs;   /* unused */
+    (void)regs;
 
     uint8_t scancode = inb(KEYBOARD_DATA_PORT);
 
+    /* Extended-scancode prefix: next byte is an extended scancode */
+    if (scancode == 0xE0u) {
+        extended_code = 1;
+        return;
+    }
+
+    if (extended_code) {
+        extended_code = 0;
+
+        /* Only handle make-codes (bit 7 clear) for extended keys */
+        if (!(scancode & 0x80u)) {
+            char special = 0;
+            switch (scancode) {
+            case 0x48u: special = (char)KEY_UP;    break;  /* ↑ */
+            case 0x50u: special = (char)KEY_DOWN;  break;  /* ↓ */
+            case 0x4Bu: special = (char)KEY_LEFT;  break;  /* ← */
+            case 0x4Du: special = (char)KEY_RIGHT; break;  /* → */
+            default:    break;
+            }
+            if (special) {
+                kb_push(special);
+            }
+        }
+        return;
+    }
+
     /* Break codes (bit 7 set) indicate key release */
-    if (scancode & 0x80) {
-        uint8_t released = scancode & 0x7F;
-        if (released == 0x2A || released == 0x36) {
+    if (scancode & 0x80u) {
+        uint8_t released = scancode & 0x7Fu;
+        if (released == 0x2Au || released == 0x36u) {
             shift_pressed = 0;
         }
         return;
     }
 
     /* Track Shift key press */
-    if (scancode == 0x2A || scancode == 0x36) {
+    if (scancode == 0x2Au || scancode == 0x36u) {
         shift_pressed = 1;
         return;
     }
@@ -203,6 +234,7 @@ static void keyboard_irq_handler(registers_t *regs)
 void keyboard_init(void)
 {
     shift_pressed = 0;
+    extended_code = 0;
     kb_head       = 0;
     kb_tail       = 0;
 
@@ -213,11 +245,13 @@ void keyboard_init(void)
 
 char keyboard_getchar(void)
 {
-    /* Spin-wait until the IRQ handler deposits a character.
-     * HLT yields the CPU until the next interrupt fires, making this
-     * an efficient idle rather than a hot busy-loop. */
+    /* Yield to other processes while the buffer is empty */
     while (kb_head == kb_tail) {
-        __asm__ volatile ("hlt");
+        if (current_process) {
+            process_block();   /* marks BLOCKED and yields */
+        } else {
+            __asm__ volatile ("hlt");
+        }
     }
 
     char c  = kb_buf[kb_head];

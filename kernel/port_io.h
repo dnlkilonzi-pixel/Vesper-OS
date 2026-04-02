@@ -24,6 +24,20 @@ static inline uint8_t inb(uint16_t port)
     return result;
 }
 
+/* Write one 16-bit word to the given I/O port */
+static inline void outw(uint16_t port, uint16_t value)
+{
+    __asm__ volatile ("outw %0, %1" : : "a"(value), "Nd"(port));
+}
+
+/* Read one 16-bit word from the given I/O port */
+static inline uint16_t inw(uint16_t port)
+{
+    uint16_t result;
+    __asm__ volatile ("inw %1, %0" : "=a"(result) : "Nd"(port));
+    return result;
+}
+
 /*
  * io_wait – Issue a dummy write to port 0x80 (POST diagnostic port).
  *

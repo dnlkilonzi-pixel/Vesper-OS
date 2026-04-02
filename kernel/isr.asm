@@ -18,6 +18,7 @@
 [BITS 32]
 
 [EXTERN interrupt_handler]   ; C dispatcher defined in isr.c
+[EXTERN syscall_handler]     ; C syscall dispatcher defined in syscall.c
 
 ; =========================================================================
 ; Macros
@@ -100,6 +101,49 @@ IRQ 12, 44   ; IRQ12 – PS/2 Mouse
 IRQ 13, 45   ; IRQ13 – FPU / coprocessor error
 IRQ 14, 46   ; IRQ14 – Primary ATA hard disk
 IRQ 15, 47   ; IRQ15 – Secondary ATA hard disk
+
+; =========================================================================
+; INT 0x80 – system-call gate (DPL=3, callable from ring 3)
+;
+; Calling convention (Linux i386 ABI):
+;   EAX = syscall number
+;   EBX = arg0,  ECX = arg1,  EDX = arg2
+;   Return value in EAX (written by syscall_handler via regs->eax).
+;
+; We build the same register frame as common_stub so that the C handler
+; receives a full registers_t* and can set regs->eax as the return value.
+; After the handler returns, POPA restores the (possibly modified) EAX.
+; =========================================================================
+global isr_syscall
+isr_syscall:
+    push dword 0        ; dummy err_code
+    push dword 0x80     ; int_no = 0x80
+
+    pusha               ; save EAX (syscall#), ECX, EDX, EBX, ESP, EBP, ESI, EDI
+
+    push ds
+    push es
+    push fs
+    push gs
+
+    mov  ax, 0x10       ; kernel data segment
+    mov  ds, ax
+    mov  es, ax
+    mov  fs, ax
+    mov  gs, ax
+
+    push esp            ; registers_t *regs
+    call syscall_handler
+    add  esp, 4
+
+    pop  gs
+    pop  fs
+    pop  es
+    pop  ds
+
+    popa                ; restores EAX = return value written by handler
+    add  esp, 8         ; discard int_no + err_code
+    iret
 
 ; =========================================================================
 ; common_stub – unified register-save / restore frame

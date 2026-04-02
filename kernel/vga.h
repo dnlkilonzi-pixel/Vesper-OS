@@ -2,6 +2,7 @@
 #define VGA_H
 
 #include <stdint.h>
+#include <stdarg.h>
 
 /* VGA text-mode buffer is mapped at physical address 0xB8000.
  * Each cell is a 16-bit word:
@@ -64,5 +65,19 @@ void vga_print_uint(uint32_t n);
 
 /* Print an unsigned 32-bit integer as "0xXXXXXXXX" (uppercase hex) */
 void vga_print_hex(uint32_t n);
+
+/*
+ * vga_printf – simple printf-style formatted output to the VGA console.
+ *
+ * Supported format specifiers:
+ *   %c  – char
+ *   %s  – NUL-terminated string
+ *   %d  – signed 32-bit decimal
+ *   %u  – unsigned 32-bit decimal
+ *   %x  – unsigned 32-bit lowercase hex (without "0x" prefix)
+ *   %X  – unsigned 32-bit uppercase hex (without "0x" prefix)
+ *   %%  – literal percent sign
+ */
+void vga_printf(const char *fmt, ...);
 
 #endif /* VGA_H */

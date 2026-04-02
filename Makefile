@@ -50,11 +50,26 @@ KERNEL_C_SRCS  := $(KERNEL_DIR)/kernel.c   \
                   $(KERNEL_DIR)/pic.c       \
                   $(KERNEL_DIR)/idt.c       \
                   $(KERNEL_DIR)/isr.c       \
-                  $(KERNEL_DIR)/kmem.c
+                  $(KERNEL_DIR)/kmem.c      \
+                  $(KERNEL_DIR)/serial.c    \
+                  $(KERNEL_DIR)/timer.c     \
+                  $(KERNEL_DIR)/pmm.c       \
+                  $(KERNEL_DIR)/paging.c    \
+                  $(KERNEL_DIR)/gdt.c       \
+                  $(KERNEL_DIR)/tss.c       \
+                  $(KERNEL_DIR)/process.c   \
+                  $(KERNEL_DIR)/syscall.c   \
+                  $(KERNEL_DIR)/ata.c       \
+                  $(KERNEL_DIR)/fs.c        \
+                  $(KERNEL_DIR)/elf.c       \
+                  $(KERNEL_DIR)/rtc.c       \
+                  $(KERNEL_DIR)/pipe.c      \
+                  $(KERNEL_DIR)/fd.c
 
 # Object files: kernel_entry.o must come FIRST so it lands at 0x1000
-KERNEL_OBJS := $(BUILD_DIR)/kernel_entry.o \
-               $(BUILD_DIR)/isr_stubs.o     \
+KERNEL_OBJS := $(BUILD_DIR)/kernel_entry.o  \
+               $(BUILD_DIR)/isr_stubs.o      \
+               $(BUILD_DIR)/process_ctx.o    \
                $(patsubst $(KERNEL_DIR)/%.c, $(BUILD_DIR)/%.o, $(KERNEL_C_SRCS))
 
 # -----------------------------------------------------------------------------
@@ -73,12 +88,12 @@ all: $(OS_IMAGE)
 
 # Launch in QEMU using the raw disk image
 run: $(OS_IMAGE)
-	qemu-system-i386 -drive format=raw,file=$(OS_IMAGE),index=0,media=disk -m 32M
+	qemu-system-i386 -drive format=raw,file=$(OS_IMAGE),index=0,media=disk -m 32M -serial stdio
 
 # Same as run but with a QEMU monitor on stdio for interactive debugging
 run-debug: $(OS_IMAGE)
 	qemu-system-i386 -drive format=raw,file=$(OS_IMAGE),index=0,media=disk \
-	                 -m 32M -monitor stdio
+	                 -m 32M -serial file:/dev/null -monitor stdio
 
 clean:
 	rm -rf $(BUILD_DIR)
@@ -93,7 +108,11 @@ clean:
 # -----------------------------------------------------------------------------
 $(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) | $(BUILD_DIR)
 	@echo "[IMG]  $@"
-	dd if=/dev/zero        of=$@ bs=512 count=2880   2>/dev/null
+	# Disk layout:
+	#   Sector   0        : boot sector (512 B)
+	#   Sectors  1–128    : kernel binary (64 KB budget)
+	#   Sectors  129–8191 : VesperFS partition
+	dd if=/dev/zero        of=$@ bs=512 count=8192   2>/dev/null
 	dd if=$(BOOT_BIN)      of=$@ bs=512 conv=notrunc 2>/dev/null
 	dd if=$(KERNEL_BIN)    of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
 
@@ -114,6 +133,11 @@ $(BUILD_DIR)/kernel_entry.o: $(KERNEL_ENTRY) | $(BUILD_DIR)
 
 # Compile the ISR / IRQ stubs
 $(BUILD_DIR)/isr_stubs.o: $(KERNEL_DIR)/isr.asm | $(BUILD_DIR)
+	@echo "[ASM]  $<"
+	$(AS) $(ASFLAGS) $< -o $@
+
+# Compile the process context-switch stub
+$(BUILD_DIR)/process_ctx.o: $(KERNEL_DIR)/process.asm | $(BUILD_DIR)
 	@echo "[ASM]  $<"
 	$(AS) $(ASFLAGS) $< -o $@
 
