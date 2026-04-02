@@ -133,3 +133,38 @@ void vga_set_cursor(int row, int col)
 
 int vga_get_row(void) { return vga_row; }
 int vga_get_col(void) { return vga_col; }
+
+/* Print an unsigned 32-bit integer in decimal */
+void vga_print_uint(uint32_t n)
+{
+    if (n == 0) {
+        vga_putchar('0');
+        return;
+    }
+
+    /* Build digits in reverse, then print forward */
+    char buf[12];   /* 2^32 = 4294967296, 10 digits + NUL + spare */
+    int  i = 0;
+
+    while (n > 0) {
+        buf[i++] = (char)('0' + (n % 10));
+        n /= 10;
+    }
+
+    /* Reverse-print */
+    for (int j = i - 1; j >= 0; j--) {
+        vga_putchar(buf[j]);
+    }
+}
+
+/* Print an unsigned 32-bit integer as "0xXXXXXXXX" */
+void vga_print_hex(uint32_t n)
+{
+    vga_puts("0x");
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        uint32_t nibble = (n >> shift) & 0xFu;
+        vga_putchar(nibble < 10u
+                    ? (char)('0' + nibble)
+                    : (char)('A' + nibble - 10u));
+    }
+}

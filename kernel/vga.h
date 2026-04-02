@@ -59,4 +59,10 @@ int vga_get_row(void);
 /* Query current cursor column */
 int vga_get_col(void);
 
+/* Print an unsigned 32-bit integer in decimal */
+void vga_print_uint(uint32_t n);
+
+/* Print an unsigned 32-bit integer as "0xXXXXXXXX" (uppercase hex) */
+void vga_print_hex(uint32_t n);
+
 #endif /* VGA_H */

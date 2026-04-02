@@ -46,10 +46,15 @@ KERNEL_ENTRY   := $(KERNEL_DIR)/kernel_entry.asm
 KERNEL_C_SRCS  := $(KERNEL_DIR)/kernel.c   \
                   $(KERNEL_DIR)/vga.c       \
                   $(KERNEL_DIR)/keyboard.c  \
-                  $(KERNEL_DIR)/shell.c
+                  $(KERNEL_DIR)/shell.c     \
+                  $(KERNEL_DIR)/pic.c       \
+                  $(KERNEL_DIR)/idt.c       \
+                  $(KERNEL_DIR)/isr.c       \
+                  $(KERNEL_DIR)/kmem.c
 
 # Object files: kernel_entry.o must come FIRST so it lands at 0x1000
 KERNEL_OBJS := $(BUILD_DIR)/kernel_entry.o \
+               $(BUILD_DIR)/isr_stubs.o     \
                $(patsubst $(KERNEL_DIR)/%.c, $(BUILD_DIR)/%.o, $(KERNEL_C_SRCS))
 
 # -----------------------------------------------------------------------------
@@ -104,6 +109,11 @@ $(KERNEL_BIN): $(KERNEL_OBJS) linker.ld | $(BUILD_DIR)
 
 # Compile the kernel entry assembly stub
 $(BUILD_DIR)/kernel_entry.o: $(KERNEL_ENTRY) | $(BUILD_DIR)
+	@echo "[ASM]  $<"
+	$(AS) $(ASFLAGS) $< -o $@
+
+# Compile the ISR / IRQ stubs
+$(BUILD_DIR)/isr_stubs.o: $(KERNEL_DIR)/isr.asm | $(BUILD_DIR)
 	@echo "[ASM]  $<"
 	$(AS) $(ASFLAGS) $< -o $@
 

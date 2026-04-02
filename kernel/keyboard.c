@@ -1,33 +1,17 @@
 #include "keyboard.h"
-
-/* -------------------------------------------------------------------------
- * Low-level port I/O
- * ---------------------------------------------------------------------- */
-
-/* Read one byte from the given I/O port */
-static inline uint8_t inb(uint16_t port)
-{
-    uint8_t result;
-    __asm__ volatile ("inb %1, %0" : "=a"(result) : "Nd"(port));
-    return result;
-}
-
-/* Spin until the PS/2 output buffer is non-empty (bit 0 of status port) */
-static void keyboard_wait(void)
-{
-    while (!(inb(KEYBOARD_STATUS_PORT) & 0x01))
-        ;
-}
+#include "port_io.h"
+#include "isr.h"
+#include "pic.h"
 
 /* -------------------------------------------------------------------------
  * Scancode → ASCII translation tables (PS/2 Scancode Set 1)
  *
- * Index = scancode value (make code).  Value 0 = no printable mapping.
- * Covers scancodes 0x00–0x39 (Space key).
+ * Index = make-code scancode byte.  Value 0 = no printable mapping.
+ * Covers scancodes 0x00–0x39.
  * ---------------------------------------------------------------------- */
 static const char scancode_ascii[] = {
     /* 0x00 */ 0,
-    /* 0x01 */ 0,     /* Escape */
+    /* 0x01 */ 0,     /* Escape        */
     /* 0x02 */ '1',
     /* 0x03 */ '2',
     /* 0x04 */ '3',
@@ -40,8 +24,8 @@ static const char scancode_ascii[] = {
     /* 0x0B */ '0',
     /* 0x0C */ '-',
     /* 0x0D */ '=',
-    /* 0x0E */ '\b',  /* Backspace */
-    /* 0x0F */ '\t',  /* Tab */
+    /* 0x0E */ '\b',  /* Backspace     */
+    /* 0x0F */ '\t',  /* Tab           */
     /* 0x10 */ 'q',
     /* 0x11 */ 'w',
     /* 0x12 */ 'e',
@@ -54,8 +38,8 @@ static const char scancode_ascii[] = {
     /* 0x19 */ 'p',
     /* 0x1A */ '[',
     /* 0x1B */ ']',
-    /* 0x1C */ '\n',  /* Enter */
-    /* 0x1D */ 0,     /* Left Ctrl */
+    /* 0x1C */ '\n',  /* Enter         */
+    /* 0x1D */ 0,     /* Left Ctrl     */
     /* 0x1E */ 'a',
     /* 0x1F */ 's',
     /* 0x20 */ 'd',
@@ -68,7 +52,7 @@ static const char scancode_ascii[] = {
     /* 0x27 */ ';',
     /* 0x28 */ '\'',
     /* 0x29 */ '`',
-    /* 0x2A */ 0,     /* Left Shift */
+    /* 0x2A */ 0,     /* Left Shift    */
     /* 0x2B */ '\\',
     /* 0x2C */ 'z',
     /* 0x2D */ 'x',
@@ -80,13 +64,12 @@ static const char scancode_ascii[] = {
     /* 0x33 */ ',',
     /* 0x34 */ '.',
     /* 0x35 */ '/',
-    /* 0x36 */ 0,     /* Right Shift */
-    /* 0x37 */ '*',   /* Keypad * */
-    /* 0x38 */ 0,     /* Left Alt */
-    /* 0x39 */ ' ',   /* Space */
+    /* 0x36 */ 0,     /* Right Shift   */
+    /* 0x37 */ '*',   /* Keypad *      */
+    /* 0x38 */ 0,     /* Left Alt      */
+    /* 0x39 */ ' ',   /* Space         */
 };
 
-/* Same table with Shift held */
 static const char scancode_ascii_shift[] = {
     /* 0x00 */ 0,
     /* 0x01 */ 0,
@@ -149,10 +132,69 @@ static const char scancode_ascii_shift[] = {
 };
 
 /* -------------------------------------------------------------------------
+ * Ring buffer  (interrupt-driven producer / consumer)
+ *
+ * The IRQ1 handler writes characters here; keyboard_getchar() reads them.
+ * Declared volatile to prevent the compiler from caching reads/writes.
+ * ---------------------------------------------------------------------- */
+#define KB_BUF_SIZE 64u
+
+static volatile char    kb_buf[KB_BUF_SIZE];
+static volatile uint8_t kb_head = 0;   /* consumer read  position */
+static volatile uint8_t kb_tail = 0;   /* producer write position */
+
+/* Push one ASCII character into the ring buffer (called from IRQ context) */
+static void kb_push(char c)
+{
+    uint8_t next = (uint8_t)((kb_tail + 1u) % KB_BUF_SIZE);
+    if (next != kb_head) {          /* drop silently if the buffer is full */
+        kb_buf[kb_tail] = c;
+        kb_tail         = next;
+    }
+}
+
+/* -------------------------------------------------------------------------
  * Driver state
  * ---------------------------------------------------------------------- */
+static int shift_pressed = 0;
 
-static int shift_pressed = 0;   /* Non-zero while a Shift key is held */
+/* -------------------------------------------------------------------------
+ * IRQ1 handler – called from the interrupt dispatcher in isr.c
+ *
+ * Reads the PS/2 scancode, updates Shift state, translates make-codes to
+ * ASCII and pushes the result into the ring buffer.
+ * ---------------------------------------------------------------------- */
+static void keyboard_irq_handler(registers_t *regs)
+{
+    (void)regs;   /* unused */
+
+    uint8_t scancode = inb(KEYBOARD_DATA_PORT);
+
+    /* Break codes (bit 7 set) indicate key release */
+    if (scancode & 0x80) {
+        uint8_t released = scancode & 0x7F;
+        if (released == 0x2A || released == 0x36) {
+            shift_pressed = 0;
+        }
+        return;
+    }
+
+    /* Track Shift key press */
+    if (scancode == 0x2A || scancode == 0x36) {
+        shift_pressed = 1;
+        return;
+    }
+
+    /* Translate scancode to ASCII and buffer it */
+    if (scancode < (uint8_t)sizeof(scancode_ascii)) {
+        char c = shift_pressed
+                 ? scancode_ascii_shift[scancode]
+                 : scancode_ascii[scancode];
+        if (c != 0) {
+            kb_push(c);
+        }
+    }
+}
 
 /* -------------------------------------------------------------------------
  * Public API
@@ -161,39 +203,24 @@ static int shift_pressed = 0;   /* Non-zero while a Shift key is held */
 void keyboard_init(void)
 {
     shift_pressed = 0;
+    kb_head       = 0;
+    kb_tail       = 0;
+
+    /* Register our IRQ handler and unmask IRQ1 on the master PIC */
+    irq_register_handler(1, keyboard_irq_handler);
+    pic_unmask_irq(1);
 }
 
-/* Block until a printable ASCII character is available and return it */
 char keyboard_getchar(void)
 {
-    while (1) {
-        keyboard_wait();
-        uint8_t scancode = inb(KEYBOARD_DATA_PORT);
-
-        /* Break codes (key-release) have bit 7 set */
-        if (scancode & 0x80) {
-            uint8_t released = scancode & 0x7F;
-            /* Track Shift release (left=0x2A, right=0x36) */
-            if (released == 0x2A || released == 0x36) {
-                shift_pressed = 0;
-            }
-            continue;
-        }
-
-        /* Track Shift press */
-        if (scancode == 0x2A || scancode == 0x36) {
-            shift_pressed = 1;
-            continue;
-        }
-
-        /* Map scancode to ASCII */
-        if (scancode < sizeof(scancode_ascii)) {
-            char c = shift_pressed
-                     ? scancode_ascii_shift[scancode]
-                     : scancode_ascii[scancode];
-            if (c != 0) {
-                return c;
-            }
-        }
+    /* Spin-wait until the IRQ handler deposits a character.
+     * HLT yields the CPU until the next interrupt fires, making this
+     * an efficient idle rather than a hot busy-loop. */
+    while (kb_head == kb_tail) {
+        __asm__ volatile ("hlt");
     }
+
+    char c  = kb_buf[kb_head];
+    kb_head = (uint8_t)((kb_head + 1u) % KB_BUF_SIZE);
+    return c;
 }
